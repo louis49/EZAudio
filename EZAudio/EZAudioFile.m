@@ -198,6 +198,15 @@ typedef struct
 }
 
 //------------------------------------------------------------------------------
+#pragma mark - Copying
+//------------------------------------------------------------------------------
+
+- (id)copyWithZone:(NSZone *)zone
+{
+    return [EZAudioFile audioFileWithURL:self.url];
+}
+
+//------------------------------------------------------------------------------
 #pragma mark - Setup
 //------------------------------------------------------------------------------
 
@@ -378,10 +387,10 @@ typedef struct
         SInt64 currentFrame = self.frameIndex;
         BOOL interleaved = [EZAudioUtilities isInterleaved:self.clientFormat];
         UInt32 channels = self.clientFormat.mChannelsPerFrame;
-        float **data = (float **)malloc( sizeof(float*) * channels );
+        float **data = (float **)malloc(sizeof(float *) * channels);
         for (int i = 0; i < channels; i++)
         {
-            data[i] = (float *)malloc( sizeof(float) * numberOfPoints );
+            data[i] = (float *)malloc(sizeof(float) * numberOfPoints);
         }
         
         // seek to 0

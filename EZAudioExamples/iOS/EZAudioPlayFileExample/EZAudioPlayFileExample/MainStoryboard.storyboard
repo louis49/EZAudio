@@ -129,7 +129,7 @@
                     <connections>
                         <outlet property="audioPlot" destination="kt3-hw-eFY" id="9mm-d1-vJk"/>
                         <outlet property="filePathLabel" destination="i5r-ex-ukW" id="GRl-ld-nWi"/>
-                        <outlet property="framePositionSlider" destination="Oc2-kU-kAJ" id="z0M-Q9-JAb"/>
+                        <outlet property="positionSlider" destination="Oc2-kU-kAJ" id="G0U-z3-UUH"/>
                         <outlet property="view" destination="PED-9r-Xub" id="Xxb-En-D2X"/>
                     </connections>
                 </viewController>

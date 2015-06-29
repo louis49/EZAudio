@@ -26,274 +26,624 @@
 #import "EZAudioPlayer.h"
 #import "EZAudioUtilities.h"
 
-#if TARGET_OS_IPHONE
-#elif TARGET_OS_MAC
-#endif
-@interface EZAudioPlayer () <EZAudioFileDelegate,EZOutputDataSource>
+//------------------------------------------------------------------------------
+#pragma mark - Constants
+//------------------------------------------------------------------------------
+
+UInt32 const EZAudioPlayerMaximumFramesPerSlice = 4096;
+
+//------------------------------------------------------------------------------
+#pragma mark - Data Structures
+//------------------------------------------------------------------------------
+
+typedef struct
 {
-  BOOL _eof;
-}
-@property (nonatomic,strong,setter=setAudioFile:) EZAudioFile *audioFile;
-@property (nonatomic,strong,setter=setOutput:)    EZOutput    *output;
+    // stream format params
+    AudioStreamBasicDescription clientFormat;
+    
+    // nodes
+    EZAudioNodeInfo converterNodeInfo;
+    EZAudioNodeInfo mixerNodeInfo;
+    EZAudioNodeInfo outputNodeInfo;
+    
+    // audio graph
+    AUGraph graph;
+} EZAudioPlayerInfo;
+
+//------------------------------------------------------------------------------
+#pragma mark - Callbacks (Declaration)
+//------------------------------------------------------------------------------
+
+OSStatus EZAudioPlayerConverterInputCallback(void                       *inRefCon,
+                                             AudioUnitRenderActionFlags *ioActionFlags,
+                                             const AudioTimeStamp       *inTimeStamp,
+                                             UInt32					     inBusNumber,
+                                             UInt32					     inNumberFrames,
+                                             AudioBufferList            *ioData);
+
+//------------------------------------------------------------------------------
+
+OSStatus EZAudioPlayerGraphRenderCallback(void                       *inRefCon,
+                                          AudioUnitRenderActionFlags *ioActionFlags,
+                                          const AudioTimeStamp       *inTimeStamp,
+                                          UInt32					  inBusNumber,
+                                          UInt32					  inNumberFrames,
+                                          AudioBufferList            *ioData);
+
+//------------------------------------------------------------------------------
+#pragma mark - EZAudioPlayer (Interface Extension)
+//------------------------------------------------------------------------------
+
+@interface EZAudioPlayer ()
+@property (nonatomic, assign) EZAudioPlayerInfo *info;
 @end
+
+//------------------------------------------------------------------------------
+#pragma mark - EZAudioPlayer (Implementation)
+//------------------------------------------------------------------------------
 
 @implementation EZAudioPlayer
-@synthesize audioFile = _audioFile;
-@synthesize audioPlayerDelegate = _audioPlayerDelegate;
-@synthesize output = _output;
-@synthesize shouldLoop = _shouldLoop;
 
-#pragma mark - Initializers
--(id)init {
-  self = [super init];
-  if(self){
-    [self _configureAudioPlayer];
-  }
-  return self;
-}
+//------------------------------------------------------------------------------
+#pragma mark - Dealloc
+//------------------------------------------------------------------------------
 
--(EZAudioPlayer*)initWithEZAudioFile:(EZAudioFile *)audioFile {
-  return [self initWithEZAudioFile:audioFile withDelegate:nil];
-}
-
--(EZAudioPlayer *)initWithEZAudioFile:(EZAudioFile *)audioFile
-                         withDelegate:(id<EZAudioPlayerDelegate>)audioPlayerDelegate {
-  self = [super init];
-  if(self){
-    // This should make a separate reference to the audio file
-    [self _configureAudioPlayer];
-    self.audioFile           = audioFile;
-    self.audioPlayerDelegate = audioPlayerDelegate;
-  }
-  return self;
-}
-
--(EZAudioPlayer *)initWithURL:(NSURL *)url {
-  return [self initWithURL:url withDelegate:nil];
-}
-
--(EZAudioPlayer *)initWithURL:(NSURL *)url
-                 withDelegate:(id<EZAudioPlayerDelegate>)audioPlayerDelegate {
-  self = [super init];
-  if(self){
-    [self _configureAudioPlayer];
-    self.audioFile           = [[EZAudioFile alloc] initWithURL:url];
-    self.audioFile.delegate = self;
-    self.audioPlayerDelegate = audioPlayerDelegate;
-  }
-  return self;
-}
-
-#pragma mark - Class Initializers
-+(EZAudioPlayer *)audioPlayerWithEZAudioFile:(EZAudioFile *)audioFile {
-  return [[EZAudioPlayer alloc] initWithEZAudioFile:audioFile];
-}
-
-+(EZAudioPlayer *)audioPlayerWithEZAudioFile:(EZAudioFile *)audioFile
-                                withDelegate:(id<EZAudioPlayerDelegate>)audioPlayerDelegate {
-  return [[EZAudioPlayer alloc] initWithEZAudioFile:audioFile
-                                       withDelegate:audioPlayerDelegate];
-}
-
-+(EZAudioPlayer *)audioPlayerWithURL:(NSURL *)url {
-  return [[EZAudioPlayer alloc] initWithURL:url];
-}
-
-+(EZAudioPlayer *)audioPlayerWithURL:(NSURL *)url
-                        withDelegate:(id<EZAudioPlayerDelegate>)audioPlayerDelegate {
-  return [[EZAudioPlayer alloc] initWithURL:url
-                               withDelegate:audioPlayerDelegate];
-}
-
-#pragma mark - Singleton
-+(EZAudioPlayer *)sharedAudioPlayer {
-  static EZAudioPlayer *_sharedAudioPlayer = nil;
-  static dispatch_once_t onceToken;
-  dispatch_once(&onceToken, ^{
-    _sharedAudioPlayer = [[EZAudioPlayer alloc] init];
-  });
-  return _sharedAudioPlayer;
-}
-
-#pragma mark - Private Configuration
--(void)_configureAudioPlayer {
-  
-  // Defaults
-  self.output = [EZOutput sharedOutput];
-  
-#if TARGET_OS_IPHONE
-  // Configure the AVSession
-  AVAudioSession *audioSession = [AVAudioSession sharedInstance];
-  NSError *err = NULL;
-  [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord error:&err];
-  if (err){
-    NSLog(@"There was an error creating the audio session");
-  }
-  [audioSession overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:NULL];
-  if (err){
-    NSLog(@"There was an error sending the audio to the speakers");
-  }
-#elif TARGET_OS_MAC
-#endif
-  
-}
-
-#pragma mark - Getters
--(EZAudioFile*)audioFile {
-  return _audioFile;
-}
-
--(float)currentTime {
-  NSAssert(_audioFile,@"No audio file to perform the seek on, check that EZAudioFile is not nil");
-  return [EZAudioUtilities MAP:self.audioFile.frameIndex
-              leftMin:0
-              leftMax:self.audioFile.totalFrames
-             rightMin:0
-             rightMax:self.audioFile.duration];
-}
-
--(BOOL)endOfFile {
-  return _eof;
-}
-
--(SInt64)frameIndex {
-  NSAssert(_audioFile,@"No audio file to perform the seek on, check that EZAudioFile is not nil");
-  return _audioFile.frameIndex;
-}
-
--(BOOL)isPlaying {
-  return self.output.isPlaying;
-}
-
--(EZOutput*)output {
-  NSAssert(_output,@"No output was found, this should by default be the EZOutput shared instance");
-  return _output;
-}
-
--(float)totalDuration {
-  NSAssert(_audioFile,@"No audio file to perform the seek on, check that EZAudioFile is not nil");
-  return _audioFile.duration;
-}
-
--(SInt64)totalFrames {
-  NSAssert(_audioFile,@"No audio file to perform the seek on, check that EZAudioFile is not nil");
-  return _audioFile.totalFrames;
-}
-
--(NSURL *)url {
-  NSAssert(_audioFile,@"No audio file to perform the seek on, check that EZAudioFile is not nil");
-  return _audioFile.url;
-}
-
-#pragma mark - Setters
--(void)setAudioFile:(EZAudioFile *)audioFile {
-  if (_audioFile){
-    _audioFile.delegate = nil;
-  }
-  _eof       = NO;
-    _audioFile = [EZAudioFile audioFileWithURL:audioFile.url];
-    _audioFile.delegate = self;
-  NSAssert(_output,@"No output was found, this should by default be the EZOutput shared instance");
-  [_output setAudioStreamBasicDescription:self.audioFile.clientFormat];    
-}
-
--(void)setOutput:(EZOutput*)output {
-  _output                  = output;
-  _output.outputDataSource = self;
-}
-
-#pragma mark - Methods
--(void)play {
-  NSAssert(_audioFile,@"No audio file to perform the seek on, check that EZAudioFile is not nil");
-  if (_audioFile){
-    [_output startPlayback];
-    if (self.frameIndex != self.totalFrames){
-      _eof = NO;
-    }
-    if (self.audioPlayerDelegate){
-      if ([self.audioPlayerDelegate respondsToSelector:@selector(audioPlayer:didResumePlaybackOnAudioFile:)]){
-        // Notify the delegate we're starting playback
-        [self.audioPlayerDelegate audioPlayer:self didResumePlaybackOnAudioFile:_audioFile];
-      }
-    }
-  }
-}
-
--(void)pause {
-  NSAssert(self.audioFile,@"No audio file to perform the seek on, check that EZAudioFile is not nil");
-  if (_audioFile){
-    [_output stopPlayback];
-    if (self.audioPlayerDelegate){
-      if ([self.audioPlayerDelegate respondsToSelector:@selector(audioPlayer:didPausePlaybackOnAudioFile:)]){
-        // Notify the delegate we're pausing playback
-        [self.audioPlayerDelegate audioPlayer:self didPausePlaybackOnAudioFile:_audioFile];
-      }
-    }
-  }
-}
-
--(void)seekToFrame:(SInt64)frame {
-  NSAssert(_audioFile,@"No audio file to perform the seek on, check that EZAudioFile is not nil");
-  if (_audioFile){
-    [_audioFile seekToFrame:frame];
-  }
-  if (self.frameIndex != self.totalFrames){
-    _eof = NO;
-  }
-}
-
--(void)stop {
-  NSAssert(_audioFile,@"No audio file to perform the seek on, check that EZAudioFile is not nil");
-  if (_audioFile){
-    [_output stopPlayback];
-    [_audioFile seekToFrame:0];
-    _eof = NO;
-  }
-}
-
-#pragma mark - EZAudioFileDelegate
--(void)audioFile:(EZAudioFile *)audioFile
-       readAudio:(float **)buffer
-  withBufferSize:(UInt32)bufferSize
-withNumberOfChannels:(UInt32)numberOfChannels {
-  if (self.audioPlayerDelegate){
-    if ([self.audioPlayerDelegate respondsToSelector:@selector(audioPlayer:readAudio:withBufferSize:withNumberOfChannels:inAudioFile:)]){
-      [self.audioPlayerDelegate audioPlayer:self
-                                  readAudio:buffer
-                             withBufferSize:bufferSize
-                       withNumberOfChannels:numberOfChannels
-                                inAudioFile:audioFile];
-    }
-  }
-}
-
--(void)audioFile:(EZAudioFile *)audioFile updatedPosition:(SInt64)framePosition {
-  if (self.audioPlayerDelegate){
-    if ([self.audioPlayerDelegate respondsToSelector:@selector(audioPlayer:updatedPosition:inAudioFile:)]){
-      [self.audioPlayerDelegate audioPlayer:self
-                            updatedPosition:framePosition
-                                inAudioFile:audioFile];
-    }
-  }
-}
-
-#pragma mark - EZOutputDataSource
--(void)             output:(EZOutput *)output
- shouldFillAudioBufferList:(AudioBufferList *)audioBufferList
-        withNumberOfFrames:(UInt32)frames
+- (void)dealloc
 {
-    if (self.audioFile)
-    {
-        UInt32 bufferSize;
-        [self.audioFile readFrames:frames
-                   audioBufferList:audioBufferList
-                        bufferSize:&bufferSize
-                               eof:&_eof];
-        if (_eof && self.shouldLoop)
-        {
-            [self seekToFrame:0];
-        }
-    }
+    [self cleanupCustomNodes];
+    self.audioFile = nil;
+    free(self.info);
 }
+
+//------------------------------------------------------------------------------
+#pragma mark - Class Methods
+//------------------------------------------------------------------------------
+
++ (instancetype)audioPlayer
+{
+    return [[self alloc] init];
+}
+
+//------------------------------------------------------------------------------
+
++ (EZAudioPlayer *)audioPlayerWithAudioFile:(EZAudioFile *)audioFile
+{
+    return [[self alloc] initWithAudioFile:audioFile];
+}
+
+//------------------------------------------------------------------------------
+
++ (EZAudioPlayer *)audioPlayerWithAudioFile:(EZAudioFile *)audioFile
+                                   delegate:(id<EZAudioPlayerDelegate>)delegate
+{
+    return [[self alloc] initWithAudioFile:audioFile
+                                  delegate:delegate];
+}
+
+//------------------------------------------------------------------------------
+
++ (EZAudioPlayer *)audioPlayerWithURL:(NSURL *)url
+{
+    return [[self alloc] initWithURL:url];
+}
+
+//------------------------------------------------------------------------------
+
++ (EZAudioPlayer *)audioPlayerWithURL:(NSURL *)url
+                             delegate:(id<EZAudioPlayerDelegate>)delegate
+{
+    return [[self alloc] initWithURL:url delegate:delegate];
+}
+
+//------------------------------------------------------------------------------
+#pragma mark - Initialization
+//------------------------------------------------------------------------------
+
+- (instancetype)init
+{
+    self = [super init];
+    if (self)
+    {
+        self.info = (EZAudioPlayerInfo *)malloc(sizeof(EZAudioPlayerInfo));
+        [self setup];
+    }
+    return self;
+}
+
+//------------------------------------------------------------------------------
+
+- (EZAudioPlayer *)initWithAudioFile:(EZAudioFile *)audioFile
+{
+    return [self initWithAudioFile:audioFile delegate:nil];
+}
+
+//------------------------------------------------------------------------------
+
+- (EZAudioPlayer *)initWithAudioFile:(EZAudioFile *)audioFile
+                            delegate:(id<EZAudioPlayerDelegate>)delegate
+{
+    self = [self init];
+    if (self)
+    {
+        self.audioFile = audioFile;
+        self.delegate = delegate;
+    }
+    return self;
+}
+
+//------------------------------------------------------------------------------
+
+- (EZAudioPlayer *)initWithURL:(NSURL *)url
+{
+    return [self initWithURL:url delegate:nil];
+}
+
+//------------------------------------------------------------------------------
+
+- (EZAudioPlayer *)initWithURL:(NSURL *)url
+                      delegate:(id<EZAudioPlayerDelegate>)delegate
+{
+    self = [self init];
+    if (self)
+    {
+        self.audioFile = [EZAudioFile audioFileWithURL:url delegate:self];
+        self.delegate = delegate;
+    }
+    return self;
+}
+
+//------------------------------------------------------------------------------
+#pragma mark - Singleton
+//------------------------------------------------------------------------------
+
++ (instancetype)sharedAudioPlayer
+{
+    static EZAudioPlayer *player;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^
+    {
+        player = [[self alloc] init];
+    });
+    return player;
+}
+
+//------------------------------------------------------------------------------
+#pragma mark - Setup
+//------------------------------------------------------------------------------
+
+- (void)setup
+{
+    //
+    // Setup the audio graph
+    //
+    [EZAudioUtilities checkResult:NewAUGraph(&self.info->graph)
+                        operation:"Failed to create graph"];
+    
+    //
+    // Add converter node
+    //
+    AudioComponentDescription converterDescription;
+    converterDescription.componentType = kAudioUnitType_FormatConverter;
+    converterDescription.componentSubType = kAudioUnitSubType_AUConverter;
+    converterDescription.componentManufacturer = kAudioUnitManufacturer_Apple;
+    [EZAudioUtilities checkResult:AUGraphAddNode(self.info->graph,
+                                                 &converterDescription,
+                                                 &self.info->converterNodeInfo.node)
+                        operation:"Failed to add converter node to audio graph"];
+    
+    //
+    // Add mixer node
+    //
+    AudioComponentDescription mixerDescription;
+    mixerDescription.componentType = kAudioUnitType_Mixer;
+#if TARGET_OS_IPHONE
+    mixerDescription.componentSubType = kAudioUnitSubType_MultiChannelMixer;
+#elif TARGET_OS_MAC
+    mixerDescription.componentSubType = kAudioUnitSubType_StereoMixer;
+#endif
+    mixerDescription.componentManufacturer = kAudioUnitManufacturer_Apple;
+    [EZAudioUtilities checkResult:AUGraphAddNode(self.info->graph,
+                                                 &mixerDescription,
+                                                 &self.info->mixerNodeInfo.node)
+                        operation:"Failed to add mixer node to audio graph"];
+    
+    //
+    // Add output node
+    //
+    AudioComponentDescription outputDescription;
+    outputDescription.componentType = kAudioUnitType_Output;
+#if TARGET_OS_IPHONE
+    outputDescription.componentSubType = kAudioUnitSubType_RemoteIO;
+#elif TARGET_OS_MAC
+    outputDescription.componentSubType = kAudioUnitSubType_DefaultOutput;
+#endif
+    outputDescription.componentManufacturer = kAudioUnitManufacturer_Apple;
+    [EZAudioUtilities checkResult:AUGraphAddNode(self.info->graph,
+                                                 &outputDescription,
+                                                 &self.info->outputNodeInfo.node)
+                        operation:"Failed to add output node to audio graph"];
+    
+    //
+    // Open the graph
+    //
+    [EZAudioUtilities checkResult:AUGraphOpen(self.info->graph)
+                        operation:"Failed to open graph"];
+    
+    //
+    // Make node connections
+    //
+    OSStatus status = [self connectOutputOfSourceNode:self.info->converterNodeInfo.node
+                                  sourceNodeOutputBus:0
+                                    toDestinationNode:self.info->mixerNodeInfo.node
+                              destinationNodeInputBus:0
+                                              inGraph:self.info->graph];
+    [EZAudioUtilities checkResult:status
+                        operation:"Failed to connect output of source node to destination node in graph"];
+    
+    //
+    // Connect mixer to output
+    //
+    [EZAudioUtilities checkResult:AUGraphConnectNodeInput(self.info->graph,
+                                                          self.info->mixerNodeInfo.node,
+                                                          0,
+                                                          self.info->outputNodeInfo.node,
+                                                          0)
+                        operation:"Failed to connect mixer node to output node"];
+    
+    //
+    // Get the audio units
+    //
+    [EZAudioUtilities checkResult:AUGraphNodeInfo(self.info->graph,
+                                                  self.info->converterNodeInfo.node,
+                                                  &converterDescription,
+                                                  &self.info->converterNodeInfo.audioUnit)
+                        operation:"Failed to get converter audio unit"];
+    [EZAudioUtilities checkResult:AUGraphNodeInfo(self.info->graph,
+                                                  self.info->mixerNodeInfo.node,
+                                                  &mixerDescription,
+                                                  &self.info->mixerNodeInfo.audioUnit)
+                        operation:"Failed to get mixer audio unit"];
+    [EZAudioUtilities checkResult:AUGraphNodeInfo(self.info->graph,
+                                                  self.info->outputNodeInfo.node,
+                                                  &outputDescription,
+                                                  &self.info->outputNodeInfo.audioUnit)
+                        operation:"Failed to get output audio unit"];
+    
+    //
+    // Add a node input callback for the converter node
+    //
+    AURenderCallbackStruct converterCallback;
+    converterCallback.inputProc = EZAudioPlayerConverterInputCallback;
+    converterCallback.inputProcRefCon = (__bridge void *)((EZAudioPlayer *)self);
+    [EZAudioUtilities checkResult:AUGraphSetNodeInputCallback(self.info->graph,
+                                                              self.info->converterNodeInfo.node,
+                                                              0,
+                                                              &converterCallback)
+                        operation:"Failed to set render callback on converter node"];
+    
+    //
+    // Set stream formats
+    //
+    self.info->clientFormat = [self defaultClientFormat];
+    [EZAudioUtilities checkResult:AudioUnitSetProperty(self.info->converterNodeInfo.audioUnit,
+                                                       kAudioUnitProperty_StreamFormat,
+                                                       kAudioUnitScope_Output,
+                                                       0,
+                                                       &self.info->clientFormat,
+                                                       sizeof(self.info->clientFormat))
+                        operation:"Failed to set output format on converter audio unit"];
+    [EZAudioUtilities checkResult:AudioUnitSetProperty(self.info->mixerNodeInfo.audioUnit,
+                                                       kAudioUnitProperty_StreamFormat,
+                                                       kAudioUnitScope_Input,
+                                                       1,
+                                                       &self.info->clientFormat,
+                                                       sizeof(self.info->clientFormat))
+                        operation:"Failed to set output format on mixer audio unit"];
+    [EZAudioUtilities checkResult:AudioUnitSetProperty(self.info->mixerNodeInfo.audioUnit,
+                                                       kAudioUnitProperty_StreamFormat,
+                                                       kAudioUnitScope_Output,
+                                                       0,
+                                                       &self.info->clientFormat,
+                                                       sizeof(self.info->clientFormat))
+                        operation:"Failed to set output format on mixer audio unit"];
+    
+    //
+    // Set maximum frames per slice to 4096 to allow playback during
+    // lock screen (iOS only?)
+    //
+    UInt32 maximumFramesPerSlice = EZAudioPlayerMaximumFramesPerSlice;
+    [EZAudioUtilities checkResult:AudioUnitSetProperty(self.info->mixerNodeInfo.audioUnit,
+                                                       kAudioUnitProperty_MaximumFramesPerSlice,
+                                                       kAudioUnitScope_Global,
+                                                       0,
+                                                       &maximumFramesPerSlice,
+                                                       sizeof(maximumFramesPerSlice))
+                        operation:"Failed to set maximum frames per slice on mixer node"];
+    
+    //
+    // Initialize all the audio units in the graph
+    //
+    [EZAudioUtilities checkResult:AUGraphInitialize(self.info->graph)
+                        operation:"Failed to initialize graph"];
+    
+    //
+    // Add render callback
+    //
+    [EZAudioUtilities checkResult:AudioUnitAddRenderNotify(self.info->mixerNodeInfo.audioUnit,
+                                                           EZAudioPlayerGraphRenderCallback,
+                                                           (__bridge void *)(self))
+                        operation:"Failed to add render callback"];
+}
+
+//------------------------------------------------------------------------------
+#pragma mark - Getters
+//------------------------------------------------------------------------------
+
+- (NSTimeInterval)currentTime
+{
+    return [self.audioFile currentTime];
+}
+
+//------------------------------------------------------------------------------
+
+- (NSTimeInterval)duration
+{
+    return [self.audioFile duration];
+}
+
+//------------------------------------------------------------------------------
+
+- (NSString *)formattedCurrentTime
+{
+    return [self.audioFile formattedCurrentTime];
+}
+
+//------------------------------------------------------------------------------
+
+- (NSString *)formattedDuration
+{
+    return [self.audioFile formattedDuration];
+}
+
+//------------------------------------------------------------------------------
+
+- (SInt64)frameIndex
+{
+    return [self.audioFile frameIndex];
+}
+
+//------------------------------------------------------------------------------
+
+- (BOOL)isPlaying
+{
+    Boolean isPlaying;
+    [EZAudioUtilities checkResult:AUGraphIsRunning(self.info->graph,
+                                                   &isPlaying)
+                        operation:"Failed to check if graph is running"];
+    return isPlaying;
+}
+
+//------------------------------------------------------------------------------
+
+- (float)volume
+{
+    AudioUnitParameterValue volume;
+    [EZAudioUtilities checkResult:AudioUnitGetParameter(self.info->mixerNodeInfo.audioUnit,
+                                                        kMultiChannelMixerParam_Volume,
+                                                        kAudioUnitScope_Input,
+                                                        0,
+                                                        &volume)
+                        operation:"Failed to get volume from mixer unit"];
+    return volume;
+}
+
+//------------------------------------------------------------------------------
+#pragma mark - Setters
+//------------------------------------------------------------------------------
+
+- (void)setAudioFile:(EZAudioFile *)audioFile
+{
+    _audioFile = [audioFile copy];
+    _audioFile.delegate = self;
+    AudioStreamBasicDescription inputFormat = _audioFile.clientFormat;
+    [EZAudioUtilities checkResult:AudioUnitSetProperty(self.info->converterNodeInfo.audioUnit,
+                                                       kAudioUnitProperty_StreamFormat,
+                                                       kAudioUnitScope_Input,
+                                                       0,
+                                                       &inputFormat,
+                                                       sizeof(inputFormat))
+                        operation:"Failed to set client format on EZAudioPlayer"];
+    
+}
+
+//------------------------------------------------------------------------------
+
+- (void)setVolume:(float)volume
+{
+    AudioUnitParameterID param;
+#if TARGET_OS_IPHONE
+    param = kMultiChannelMixerParam_Volume;
+#elif TARGET_OS_MAC
+    param = kStereoMixerParam_Volume;
+#endif
+    [EZAudioUtilities checkResult:AudioUnitSetParameter(self.info->mixerNodeInfo.audioUnit,
+                                                        param,
+                                                        kAudioUnitScope_Input,
+                                                        0,
+                                                        volume,
+                                                        0)
+                        operation:"Failed to set volume on mixer unit"];
+}
+
+//------------------------------------------------------------------------------
+#pragma mark - Subclass
+//------------------------------------------------------------------------------
+
+- (void)cleanupCustomNodes
+{
+    //
+    // Override in subclass
+    //
+}
+
+//------------------------------------------------------------------------------
+
+- (OSStatus)connectOutputOfSourceNode:(AUNode)sourceNode
+                  sourceNodeOutputBus:(UInt32)sourceNodeOutputBus
+                    toDestinationNode:(AUNode)destinationNode
+              destinationNodeInputBus:(UInt32)destinationNodeInputBus
+                              inGraph:(AUGraph)graph
+{
+    //
+    // Default implementation is to just connect the source to destination
+    //
+    [EZAudioUtilities checkResult:AUGraphConnectNodeInput(graph,
+                                                          sourceNode,
+                                                          sourceNodeOutputBus,
+                                                          destinationNode,
+                                                          destinationNodeInputBus)
+                        operation:"Failed to connect converter node to mixer node"];
+    return noErr;
+}
+
+//------------------------------------------------------------------------------
+
+- (AudioStreamBasicDescription)defaultClientFormat
+{
+    return [EZAudioUtilities stereoFloatNonInterleavedFormatWithSampleRate:[self defaultSampleRate]];
+}
+
+//------------------------------------------------------------------------------
+
+- (Float64)defaultSampleRate
+{
+    return 44100.0f;
+}
+
+//------------------------------------------------------------------------------
+#pragma mark - Actions
+//------------------------------------------------------------------------------
+
+- (void)play
+{
+    //
+    // start the AUGraph
+    //
+    [EZAudioUtilities checkResult:AUGraphStart(self.info->graph)
+                        operation:"Failed to start graph"];
+}
+
+//------------------------------------------------------------------------------
+
+- (void)playAudioFile:(EZAudioFile *)audioFile
+{
+    //
+    // stop playing anything that might currently be playing
+    //
+    [self pause];
+    
+    //
+    // set new stream
+    //
+    self.audioFile = audioFile;
+    
+    //
+    // begin playback
+    //
+    [self play];
+}
+
+//------------------------------------------------------------------------------
+
+- (void)pause
+{
+    //
+    // stop the AUGraph
+    //
+    [EZAudioUtilities checkResult:AUGraphStop(self.info->graph)
+                        operation:"Failed to stop graph"];
+}
+
+//------------------------------------------------------------------------------
+
+- (void)seekToFrame:(SInt64)frame
+{
+    [self.audioFile seekToFrame:frame];
+}
+
+//------------------------------------------------------------------------------
 
 @end
+
+//------------------------------------------------------------------------------
+#pragma mark - Callbacks (Implementation)
+//------------------------------------------------------------------------------
+
+OSStatus EZAudioPlayerConverterInputCallback(void                       *inRefCon,
+                                             AudioUnitRenderActionFlags *ioActionFlags,
+                                             const AudioTimeStamp       *inTimeStamp,
+                                             UInt32					     inBusNumber,
+                                             UInt32					     inNumberFrames,
+                                             AudioBufferList            *ioData)
+{
+    EZAudioPlayer *player = (__bridge EZAudioPlayer *)inRefCon;
+    UInt32 bufferSize;
+    BOOL eof;
+    [player.audioFile readFrames:inNumberFrames
+                 audioBufferList:ioData
+                      bufferSize:&bufferSize
+                             eof:&eof];
+    if (eof && player.shouldLoop)
+    {
+        [player seekToFrame:0];
+    }
+    else if (eof)
+    {
+        [player pause];
+        [player seekToFrame:0];
+    }
+    else
+    {
+        if ([player.delegate respondsToSelector:@selector(audioPlayer:updatedPosition:inAudioFile:)])
+        {
+            [player.delegate audioPlayer:player
+                         updatedPosition:[player frameIndex]
+                             inAudioFile:player.audioFile];
+        }
+    }
+    return noErr;
+}
+
+//------------------------------------------------------------------------------
+
+OSStatus EZAudioPlayerGraphRenderCallback(void                       *inRefCon,
+                                          AudioUnitRenderActionFlags *ioActionFlags,
+                                          const AudioTimeStamp       *inTimeStamp,
+                                          UInt32					  inBusNumber,
+                                          UInt32					  inNumberFrames,
+                                          AudioBufferList            *ioData)
+{
+    EZAudioPlayer *player = (__bridge EZAudioPlayer *)inRefCon;
+    
+    //
+    // provide the audio received delegate callback
+    //
+    if (*ioActionFlags & kAudioUnitRenderAction_PostRender)
+    {
+        if ([player.delegate respondsToSelector:@selector(audioPlayer:readAudio:withBufferSize:withNumberOfChannels:inAudioFile:)])
+        {
+            UInt32 channels = player.info->clientFormat.mChannelsPerFrame;
+            float *buffers[channels];
+            for (int i = 0; i < channels; i++)
+            {
+                buffers[i] = ioData->mBuffers[i].mData;
+            }
+            [player.delegate audioPlayer:player
+                               readAudio:buffers
+                          withBufferSize:inNumberFrames
+                    withNumberOfChannels:channels
+                             inAudioFile:player.audioFile];
+        }
+    }
+    return noErr;
+}

@@ -47,6 +47,17 @@ typedef struct
 } EZPlotHistoryInfo;
 
 //------------------------------------------------------------------------------
+
+/**
+ A data structure that holds information about a node in the context of an AUGraph.
+ */
+typedef struct
+{
+    AudioUnit audioUnit;
+    AUNode    node;
+} EZAudioNodeInfo;
+
+//------------------------------------------------------------------------------
 #pragma mark - Types
 //------------------------------------------------------------------------------
 
@@ -55,6 +66,17 @@ typedef CGRect EZRect;
 #elif TARGET_OS_MAC
 typedef NSRect EZRect;
 #endif
+
+//------------------------------------------------------------------------------
+#pragma mark - Blocks
+//------------------------------------------------------------------------------
+
+typedef OSStatus (^EZAudioRenderBlock)(void                       *inRefCon,
+                                       AudioUnitRenderActionFlags *ioActionFlags,
+                                       const AudioTimeStamp       *inTimeStamp,
+                                       UInt32					   inBusNumber,
+                                       UInt32				       inNumberFrames,
+                                       AudioBufferList            *ioData);
 
 //------------------------------------------------------------------------------
 #pragma mark - EZAudioUtilities
